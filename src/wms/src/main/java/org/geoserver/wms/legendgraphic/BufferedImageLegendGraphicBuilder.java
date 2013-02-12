@@ -21,13 +21,17 @@ import java.util.Map;
 import org.geoserver.platform.ServiceException;
 import org.geoserver.wms.GetLegendGraphicRequest;
 import org.geoserver.wms.map.ImageUtils;
+import org.geotools.coverage.grid.GridCoverage2D;
+import org.geotools.coverage.grid.GridCoverageFactory;
 import org.geotools.data.DataUtilities;
+import org.geotools.data.simple.SimpleFeatureCollection;
 import org.geotools.factory.CommonFactoryFinder;
 import org.geotools.feature.SchemaException;
 import org.geotools.feature.simple.SimpleFeatureBuilder;
 import org.geotools.feature.simple.SimpleFeatureTypeBuilder;
 import org.geotools.feature.type.GeometryDescriptorImpl;
 import org.geotools.feature.type.GeometryTypeImpl;
+import org.geotools.geometry.Envelope2D;
 import org.geotools.geometry.jts.LiteShape2;
 import org.geotools.renderer.lite.RendererUtilities;
 import org.geotools.renderer.lite.StyledShapePainter;
@@ -56,6 +60,7 @@ import org.opengis.feature.type.FeatureType;
 import org.opengis.feature.type.GeometryDescriptor;
 import org.opengis.feature.type.GeometryType;
 import org.opengis.filter.FilterFactory;
+import org.opengis.geometry.Envelope;
 import org.opengis.filter.expression.Expression;
 import org.opengis.filter.expression.Literal;
 import org.opengis.style.GraphicLegend;
@@ -74,13 +79,13 @@ import com.vividsolutions.jts.geom.Polygon;
  * GeoTools' {@link GeoTools' {@link http
  * ://svn.geotools.org/geotools/trunk/gt/module/main/src/org/geotools
  * /renderer/lite/StyledShapePainter.java StyledShapePainter} that produces a BufferedImage with the
- * appropiate legend graphic for a given GetLegendGraphic WMS request.
+ * appropriate legend graphic for a given GetLegendGraphic WMS request.
  * 
  * <p>
  * It should be enough for a subclass to implement {@linkPlain
  * org.vfny.geoserver.responses.wms.GetLegendGraphicProducer#writeTo(OutputStream)} and
  * <code>getContentType()</code> in order to encode the BufferedImage produced by this class to the
- * appropiate output format.
+ * appropriate output format.
  * </p>
  * 
  * <p>
@@ -144,7 +149,7 @@ public class BufferedImageLegendGraphicBuilder {
 
     /**
      * Takes a GetLegendGraphicRequest and produces a BufferedImage that then can be used by a
-     * subclass to encode it to the appropiate output format.
+     * subclass to encode it to the appropriate output format.
      * 
      * @param request
      *            the "parsed" request, where "parsed" means that it's values are already validated
@@ -240,8 +245,35 @@ public class BufferedImageLegendGraphicBuilder {
                 titleImage=getLayerTitle(layer,  w, h, transparent, request);
             }
             
-            final boolean buildRasterLegend = (!strict && layer == null && LegendUtils
-                    .checkRasterSymbolizer(gt2Style)) || LegendUtils.checkGridLayer(layer);
+            // Check for rendering transformation
+            boolean hasVectorTransformation = false;
+            List<FeatureTypeStyle> ftsList = gt2Style.featureTypeStyles();
+            for (int i=0; i<ftsList.size(); i++) {
+                FeatureTypeStyle fts = ftsList.get(i);
+                Expression exp = fts.getTransformation();
+                if (exp != null) {
+                    // Create a small fake GridCoverage2D to evaluate
+                    int size = 4;
+                    Envelope env = new Envelope2D(layer.getCoordinateReferenceSystem(), 0, 0, size, size);
+                    float[][] matrix = new float[size][size];
+                    GridCoverageFactory gcFactory = new GridCoverageFactory();
+                    GridCoverage2D gc = gcFactory.create("fake", matrix, env);
+                    
+                    // Evaluate the process and determine the output format
+                    Object result = exp.evaluate(gc);
+                    if (result != null) {
+                        if (SimpleFeatureCollection.class.isAssignableFrom(result.getClass())) {
+                            hasVectorTransformation = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            final boolean buildRasterLegend = 
+            		(!strict && layer == null && LegendUtils.checkRasterSymbolizer(gt2Style)) || 
+            		(LegendUtils.checkGridLayer(layer) && !hasVectorTransformation);
+            		                   
             if (buildRasterLegend) {
                 final RasterLayerLegendHelper rasterLegendHelper = new RasterLayerLegendHelper(request,gt2Style,ruleName);
                 final BufferedImage image = rasterLegendHelper.getLegend();
@@ -339,10 +371,7 @@ public class BufferedImageLegendGraphicBuilder {
                         for (int sIdx = 0; sIdx < symbolizers.length; sIdx++) {
                             Symbolizer symbolizer = symbolizers[sIdx];
 
-                            if (symbolizer instanceof RasterSymbolizer) {
-                                throw new IllegalStateException(
-                                        "It is not legal to have a RasterSymbolizer here");
-                            } else {
+                            if (!(symbolizer instanceof RasterSymbolizer)) {                                
                             	// rescale symbols if needed
                                 if (symbolScale > 1.0
                                         && symbolizer instanceof PointSymbolizer) {
