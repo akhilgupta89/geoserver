@@ -81,6 +81,30 @@ public class WPSRequestBuilderPanel extends Panel {
 
     private ListView<OutputParameter> outputView;
 
+    private Class<?> outputType;
+
+    /**
+     * Creates a panel to display a process and its parameters.
+     * The list of available processes is limited to those that generate
+     * the passed type of output    
+     * 
+     * Invoked with one of:
+     * <ul>
+     * <li>an empty executeRequest, which displays only the process dropdown
+     * <li<an executeRequest with the processName set, which displays the process and parameters
+     * </ul> 
+     * 
+     * @param id id of the panel
+     * @param request 
+     * @param outputType the output type to use for filtering processess
+     */
+    public WPSRequestBuilderPanel(String id,  ExecuteRequest request, Class<?> outputType) {
+        super(id);        
+        this.execute = request;
+        this.outputType = outputType;
+        setupUI();
+    }
+    
     /**
      * Creates a panel to display a process and its parameters.
      * Invoked with one of:
@@ -94,10 +118,13 @@ public class WPSRequestBuilderPanel extends Panel {
      */
     @SuppressWarnings({ "rawtypes", "unchecked" })
     public WPSRequestBuilderPanel(String id, ExecuteRequest executeRequest) {
-        super(id);
+        super(id);        
+        this.execute = executeRequest;        
+        setupUI();
+    }
+    
+    private void setupUI(){
         setOutputMarkupId(true);
-        this.execute = executeRequest;
-
         final DropDownChoice<String> processChoice = new DropDownChoice<String>("process", new PropertyModel<String>(
                 execute, "processName"), buildProcessList());
         add(processChoice);
@@ -120,7 +147,7 @@ public class WPSRequestBuilderPanel extends Panel {
 
             @Override
             protected void populateItem(ListItem item) {
-                InputParameterValues pv = (InputParameterValues) item.getModelObject();
+                final InputParameterValues pv = (InputParameterValues) item.getModelObject();
                 Parameter p = pv.getParameter();
                 item.add(new Label("param", buildParamSpec(p)));
                 item.add(new Label("paramDescription", p.description.toString(Locale.ENGLISH)));
@@ -130,22 +157,35 @@ public class WPSRequestBuilderPanel extends Panel {
                 if (pv.isBoundingBox()) {
                     EnvelopePanel envelope = new EnvelopePanel("paramValue", property);
                     envelope.setCRSFieldVisible(true);
-                    item.add(envelope);
+                    envelope.setCrsRequired(pv.getParameter().minOccurs > 0);
+                    envelope.setRequired(pv.getParameter().minOccurs > 0);
+                    item.add(envelope);                    
+                    envelope.setModelObject(pv.values.get(0).value);
                 } else if (pv.isCoordinateReferenceSystem()) {
-                    CRSPanel crs = new CRSPanel("paramValue", property);
+                    CRSPanel crs = new SubProcessCRSPanel("paramValue", property);
                     item.add(crs);
+                    crs.setModelObject(pv.values.get(0).value);
                 } else if (pv.isEnum()) {
-                    EnumPanel panel = new EnumPanel("paramValue", ((Class<Enum>) pv.getParameter().type),
-                            property);
-                    item.add(panel);
+                    if (p.maxOccurs == 1){
+                        EnumPanel panel = new EnumPanel("paramValue", ((Class<Enum>) pv.getParameter().type),
+                            property, (Enum)pv.getParameter().getDefaultValue());
+                        item.add(panel);
+                    }
+                    else{
+                        EnumMultipleSelectionPanel panel = new EnumMultipleSelectionPanel("paramValue", pv);
+                        item.add(panel);
+                    }
+                    
                 } else if(pv.isComplex()) {
                     ComplexInputPanel input = new ComplexInputPanel("paramValue", pv, 0);
                     item.add(input);
+                } else if (p.getType().equals(Boolean.class)){                    
+                    BooleanPanel panel = new BooleanPanel("paramValue", property, (Boolean) p.getDefaultValue());
+                    item.add(panel);                    
                 } else {
                     Fragment f = new Fragment("paramValue", "literal", WPSRequestBuilderPanel.this);
-                    FormComponent literal = new TextField("literalValue", property);
-                    literal.setRequired(p.minOccurs > 0);
-                    literal.setLabel(new Model<String>(p.key));
+                    LiteralValueTextField literal = new LiteralValueTextField("literalValue", pv); 
+                    literal.setValue(pv.values);
                     f.add(literal);
                     item.add(f);
                 }
@@ -157,10 +197,11 @@ public class WPSRequestBuilderPanel extends Panel {
         outputContainer = new WebMarkupContainer("outputContainer");
         outputContainer.setVisible(false);
         add(outputContainer);
-        outputView = new ListView("outputs", new PropertyModel(execute, "outputs")) {
+        outputView = new ListView("outputs", new PropertyModel(execute, "outputs")) {                        
 
             @Override
             protected void populateItem(ListItem item) {
+
                 OutputParameter pv = (OutputParameter) item.getModelObject();
                 Parameter p = pv.getParameter();
                 item.add(new CheckBox("include", new PropertyModel<Boolean>(pv, "include")));
@@ -222,6 +263,9 @@ public class WPSRequestBuilderPanel extends Panel {
 
             @Override
             protected void onUpdate(AjaxRequestTarget target) {
+                //this indicates that we have changed the process and this has to be recomputed.                
+                execute.inputs = null;
+                execute.outputs = null;
                 initProcessView();
                 target.addComponent(WPSRequestBuilderPanel.this);
                 
@@ -248,13 +292,22 @@ public class WPSRequestBuilderPanel extends Panel {
             outputContainer.setVisible(false);
         } else {
             description = pf.getDescription(name).toString(Locale.ENGLISH);
-            execute.inputs = buildInputParameters(pf, name);
-            execute.outputs = buildOutputParameters(pf, name);
+            //only create input/outputs if they do not exist (the process has changed),
+            //but don't do it if there are previous values (we're filling with an 
+            //already-defined process)
+            if (execute.inputs == null || execute.inputs.isEmpty()){
+                execute.inputs = buildInputParameters(pf, name);
+            }
+            if (execute.outputs == null || execute.outputs.isEmpty()){
+                execute.outputs = buildOutputParameters(pf, name);
+            }
             inputView.removeAll();
             outputView.removeAll();
             descriptionContainer.setVisible(true);
-            inputContainer.setVisible(true);
-            outputContainer.setVisible(true);
+            inputContainer.setVisible(true);            
+            //If this panel is part of a subprocess definition, does it really make sense to show
+            //output settings, specially if there is just one single output?            
+            outputContainer.setVisible(outputType == null);
         }
     }
 
@@ -276,7 +329,7 @@ public class WPSRequestBuilderPanel extends Panel {
         spec += " - " + p.type.getSimpleName();
         if (p.minOccurs > 1 || p.maxOccurs != 1) {
             spec += "(" + p.minOccurs + "-";
-            if (p.maxOccurs == -1) {
+            if (p.maxOccurs == -1 || p.maxOccurs == Integer.MAX_VALUE) {
                 spec += "unbounded";
             } else {
                 spec += p.maxOccurs;
@@ -316,7 +369,18 @@ public class WPSRequestBuilderPanel extends Panel {
 
         for (ProcessFactory pf : GeoServerProcessors.getProcessFactories()) {
             for (Name name : pf.getNames()) {
-                result.add(name.getURI());
+                if (outputType != null){
+                    Map<String, Parameter<?>> outputs = pf.getResultInfo(name, null);                
+                    for(Parameter<?> out : outputs.values()){
+                        if (out.type.isAssignableFrom(outputType)){
+                            result.add(name.getURI());      
+                            break;
+                        }
+                    }
+                }
+                else{
+                    result.add(name.getURI());
+                }
             }
         }
         Collections.sort(result);

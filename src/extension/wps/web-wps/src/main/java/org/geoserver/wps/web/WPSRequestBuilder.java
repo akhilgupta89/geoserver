@@ -129,7 +129,7 @@ public class WPSRequestBuilder extends GeoServerBasePage {
 
             @Override
             protected void onError(AjaxRequestTarget target, Form form) {
-                target.addComponent(getFeedbackPanel());
+                target.addComponent(builder.getFeedbackPanel());
             }
         });
     }

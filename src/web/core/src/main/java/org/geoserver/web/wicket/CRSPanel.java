@@ -109,10 +109,11 @@ public class CRSPanel extends FormComponentPanel {
     /*
      * helper for internally creating the panel. 
      */
-    void initComponents() {
+    protected void initComponents() {
             
         popupWindow = new ModalWindow("popup");
         add( popupWindow );
+        
         
         srsTextField = new TextField( "srs", new Model() );
         add( srsTextField );
@@ -239,7 +240,7 @@ public class CRSPanel extends FormComponentPanel {
     /*
      * Goes from CRS to SRS. 
      */
-    String toSRS( CoordinateReferenceSystem crs ) {
+    protected String toSRS( CoordinateReferenceSystem crs ) {
         try {
             if(crs != null) {
                 Integer epsgCode = CRS.lookupEpsgCode(crs, false);

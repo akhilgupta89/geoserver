@@ -18,10 +18,11 @@ import org.apache.wicket.model.IModel;
  */
 public class EnumPanel extends Panel {
 
-    public EnumPanel(String id, Class<Enum> enumeration, IModel<Enum> model) {
+    public EnumPanel(String id, Class<Enum> enumeration, IModel<Enum> model, Enum defaultValue) {
         super(id, model);
         final List<Enum> enums = Arrays.asList(enumeration.getEnumConstants());
         DropDownChoice<Enum> choice = new DropDownChoice<Enum>("enum", model, enums);
+        choice.setModelObject(defaultValue);
         add(choice);
     }
 }

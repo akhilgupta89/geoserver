@@ -4,13 +4,20 @@
  */
 package org.geoserver.wps.web;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.TransformerException;
 
 import org.apache.wicket.Page;
@@ -24,16 +31,30 @@ import org.apache.wicket.markup.html.form.TextArea;
 import org.apache.wicket.markup.html.form.TextField;
 import org.apache.wicket.markup.html.panel.Fragment;
 import org.apache.wicket.markup.html.panel.Panel;
+import org.apache.wicket.model.IModel;
 import org.apache.wicket.model.Model;
 import org.apache.wicket.model.PropertyModel;
+import org.apache.wicket.validation.IValidatable;
+import org.apache.wicket.validation.IValidator;
+import org.apache.wicket.validation.ValidationError;
+import org.apache.wicket.validation.validator.UrlValidator;
 import org.geoserver.catalog.Catalog;
 import org.geoserver.catalog.CoverageInfo;
 import org.geoserver.catalog.FeatureTypeInfo;
 import org.geoserver.catalog.LayerInfo;
 import org.geoserver.web.GeoServerApplication;
+import org.geoserver.wps.ppio.GMLPPIO.GML2;
 import org.geoserver.wps.web.InputParameterValues.ParameterType;
+import org.geotools.geojson.feature.FeatureJSON;
 import org.geotools.geometry.jts.ReferencedEnvelope;
+import org.geotools.gml2.GMLConfiguration;
 import org.geotools.util.logging.Logging;
+import org.geotools.xml.Parser;
+import org.xml.sax.SAXException;
+
+import com.vividsolutions.jts.geom.Geometry;
+import com.vividsolutions.jts.io.ParseException;
+import com.vividsolutions.jts.io.WKTReader;
 
 /**
  * Allows the user to edit a complex input parameter providing a variety of different editors
@@ -53,12 +74,15 @@ public class ComplexInputPanel extends Panel {
 
     ModalWindow subprocesswindow;
 
-    public ComplexInputPanel(String id, InputParameterValues pv, int valueIndex) {
+    boolean required;
+
+    public ComplexInputPanel(String id, final InputParameterValues pv, int valueIndex) {
         super(id);
         setOutputMarkupId(true);
         setDefaultModel(new PropertyModel(pv, "values[" + valueIndex + "]"));
         valueModel = new PropertyModel(getDefaultModel(), "value");
         mimeTypes = pv.getSupportedMime();
+        required = pv.getParameter().minOccurs > 0;
 
         List<ParameterType> ptypes = pv.getSupportedTypes();
         ptypes.remove(ParameterType.LITERAL);
@@ -73,8 +97,8 @@ public class ComplexInputPanel extends Panel {
         subprocesswindow.setPageCreator(new ModalWindow.PageCreator() {
 
             public Page createPage() {
-                return new SubProcessBuilder((ExecuteRequest) subprocesswindow
-                        .getDefaultModelObject(), subprocesswindow);
+                return new SubProcessBuilder((ExecuteRequest) valueModel.getObject(),/*subprocesswindow
+                        .getDefaultModelObject(),*/ subprocesswindow, pv.getParameter().type);
             }
         });
 
@@ -105,12 +129,17 @@ public class ComplexInputPanel extends Panel {
             }
 
             // data as plain text
-            Fragment f = new Fragment("editor", "text", this);
+            Fragment f = new Fragment("editor", "text", this);            
             DropDownChoice mimeChoice = new DropDownChoice("mime", new PropertyModel(
                     getDefaultModel(), "mime"), mimeTypes);
             f.add(mimeChoice);
-
-            f.add(new TextArea("textarea", valueModel));
+            
+            TextArea text = new TextArea("textarea", valueModel);
+            //This will complain when the value is required and the text is left blank, but will use 
+            //'textarea' instead of the name of the parameter. That can be improved...
+            text.setRequired(required);
+            text.add(getTextValidator(mimeChoice));
+            f.add(text);
             add(f);
         } else if (pt == ParameterType.VECTOR_LAYER) {
             // an internal vector layer
@@ -122,6 +151,7 @@ public class ComplexInputPanel extends Panel {
             Fragment f = new Fragment("editor", "vectorLayer", this);
             DropDownChoice layer = new DropDownChoice("layer", new PropertyModel(valueModel,
                     "layerName"), getVectorLayerNames());
+            layer.setRequired(required);
             f.add(layer);
             add(f);
         } else if (pt == ParameterType.RASTER_LAYER) {
@@ -134,6 +164,7 @@ public class ComplexInputPanel extends Panel {
             final DropDownChoice layer = new DropDownChoice("layer", new PropertyModel(valueModel,
                     "layerName"), getRasterLayerNames());
             f.add(layer);
+            layer.setRequired(required);
             add(f);
 
             // we need to update the raster own bounding box as wcs requests
@@ -161,11 +192,14 @@ public class ComplexInputPanel extends Panel {
                     ReferenceConfiguration.Method.POST));
             f.add(method);
 
-            DropDownChoice mimeChoice = new DropDownChoice("mime", new PropertyModel(valueModel,
-                    "mime"), mimeTypes);
+            DropDownChoice mimeChoice = new DropDownChoice("mime", new PropertyModel(
+                    valueModel, "mime"), mimeTypes);            
             f.add(mimeChoice);
 
-            f.add(new TextField("url", new PropertyModel(valueModel, "url")).setRequired(true));
+            TextField urlField = new TextField("url", new PropertyModel(valueModel, "url"));
+            urlField.setRequired(required);
+            urlField.add(new UrlValidator());
+            f.add(urlField);
             final TextArea body = new TextArea("body", new PropertyModel(valueModel, "body"));
             add(body);
 
@@ -214,22 +248,107 @@ public class ComplexInputPanel extends Panel {
             }
             xml.setOutputMarkupId(true);
             f.add(xml);
+            xml.setRequired(required);
 
             subprocesswindow.setWindowClosedCallback(new ModalWindow.WindowClosedCallback() {
 
                 public void onClose(AjaxRequestTarget target) {
-                    // turn the GUI request into an actual WPS request
+                    // turn the GUI request into an actual WPS request                    
                     xml.setModelObject(getExecuteXML());
-
-                    target.addComponent(xml);
+                    target.addComponent(xml);                 
                 }
 
             });
+            
+//            subprocesswindow.setCloseButtonCallback(new ModalWindow.CloseButtonCallback() {
+//                
+//                @Override
+//                public boolean onCloseButtonClicked(AjaxRequestTarget arg0) { 
+//                    ((SubProcessBuilder)subprocesswindow.getPage()).setCanceled();                    
+//                    return true;
+//                }
+//                
+//            });
 
             add(f);
         } else {
             error("Unsupported parameter type");
         }
+    }
+
+    private IValidator getTextValidator(final DropDownChoice mimeChoice) {                
+        return new IValidator<String>() {
+            @Override
+            //TODO: there must be a better way of getting mimetype strings...
+            public void validate(IValidatable<String> v) {
+                String s = v.getValue();    
+                String type = (String) mimeChoice.getConvertedInput();
+                if (type == null){
+                    v.error(new ValidationError().setMessage("No mime type has been selected for the textbox content"));
+                }
+                else if (type.equals("application/wkt")){
+                    try {
+                        new WKTReader().read(s);
+                    } catch (ParseException e) {
+                        v.error(new ValidationError().setMessage("Invalid WKT string:" + s));
+                    }
+                }
+                else if (type.equals("application/json")){
+                    FeatureJSON json = new FeatureJSON();
+                    try {
+                        json.readFeatureCollection(new ByteArrayInputStream(s.getBytes()));
+                    } catch (Exception e) {
+                        v.error(new ValidationError().setMessage("Invalid JSON string:" + e.getMessage()));
+                    }
+                }
+                else if (type.equals("text/xml; subtype=gml/2.1.2")){ 
+                    GMLConfiguration gml = new GMLConfiguration();
+                    Parser parser = new Parser(gml);
+                    parser.setFailOnValidationError(false);
+                    parser.setStrict(false);
+                    try {
+                        parser.validate(new ByteArrayInputStream(s.getBytes()));
+                        List<?> errors = parser.getValidationErrors(); 
+                        if (!errors.isEmpty()){
+                            v.error(new ValidationError().setMessage("Invalid GML. " + errors.get(0)));    
+                        }
+                    } catch (Exception e) {
+                        v.error(new ValidationError().setMessage("Invalid GML. " + e.getMessage()));
+                    }
+                }
+                else if (type.equals("text/xml; subtype=gml/3.1.1")){ 
+                    org.geotools.gml3.GMLConfiguration gml = new org.geotools.gml3.GMLConfiguration();
+                    Parser parser = new Parser(gml);
+                    parser.setFailOnValidationError(false);
+                    parser.setStrict(false);
+                    try {
+                        parser.validate(new ByteArrayInputStream(s.getBytes()));
+                        List<?> errors = parser.getValidationErrors(); 
+                        if (!errors.isEmpty()){
+                            v.error(new ValidationError().setMessage("Invalid GML. " + errors.get(0)));    
+                        }
+                    } catch (Exception e) {
+                        v.error(new ValidationError().setMessage("Invalid GML. " + e.getMessage()));
+                    }
+                }                
+                else if (type.equals("application/zip")){
+                    URL url;
+                    try {
+                        url = new URL(s);
+                    } catch (MalformedURLException e) {
+                        v.error(new ValidationError().setMessage("Wrong URL:" + s));
+                        return;
+                    }
+                    if (url.getProtocol().equals("file")){
+                        if (!new File(url.getFile()).exists()){
+                            v.error(new ValidationError().setMessage("The selected file does not exist:" + s));
+                        }
+                    }
+                }
+                
+            }
+        };
+        
     }
 
     String getExecuteXML() {
@@ -270,4 +389,5 @@ public class ComplexInputPanel extends Panel {
         }
         return result;
     }
+    
 }

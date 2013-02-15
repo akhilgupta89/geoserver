@@ -11,19 +11,26 @@ import org.apache.wicket.markup.html.WebPage;
 import org.apache.wicket.markup.html.form.Form;
 
 public class SubProcessBuilder extends WebPage {
+    
+    //boolean canceled;
 
-    public SubProcessBuilder(ExecuteRequest request, final ModalWindow window) {
+    public SubProcessBuilder(final ExecuteRequest request, final ModalWindow window, Class<?> outputType) {
         Form form = new Form("form");
         add(form);
 
-        final WPSRequestBuilderPanel builder = new WPSRequestBuilderPanel("builder", request);
+        final WPSRequestBuilderPanel builder = new WPSRequestBuilderPanel("builder", request, outputType);
         form.add(builder);
 
         form.add(new AjaxSubmitLink("apply") {
 
             @Override
             protected void onSubmit(AjaxRequestTarget target, Form form) {
-                window.close(target);
+                if (request.processName == null){
+                    builder.error("No process has been defined");
+                }
+                else{
+                    window.close(target);
+                }
             }
 
             @Override
@@ -34,4 +41,17 @@ public class SubProcessBuilder extends WebPage {
         });
 
     }
+
+//    public void setCanceled() {
+//        canceled = true;        
+//    }
+//    
+//    public void setAccepted() {
+//        canceled = false;        
+//    }
+//    
+//    public boolean isCanceled(){
+//        return canceled;
+//    }
+    
 }
