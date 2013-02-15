@@ -141,6 +141,9 @@ public class WPSRequestBuilderPanel extends Panel {
                 } else if(pv.isComplex()) {
                     ComplexInputPanel input = new ComplexInputPanel("paramValue", pv, 0);
                     item.add(input);
+                } else if (p.getType().equals(Boolean.class)){                    
+                    BooleanPanel panel = new BooleanPanel("paramValue", property, (Boolean) p.getDefaultValue());
+                    item.add(panel);                    
                 } else {
                     Fragment f = new Fragment("paramValue", "literal", WPSRequestBuilderPanel.this);
                     FormComponent literal = new TextField("literalValue", property);
